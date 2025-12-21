@@ -11,7 +11,11 @@ from services import generate_code, generate_insights, get_chart_url, get_previe
 
 def _chart_actions_keyboard(chart_id: str, include_insights: bool = True) -> InlineKeyboardMarkup:
     """Single-column layout to make buttons as wide as Telegram allows."""
-    rows = [[InlineKeyboardButton("🔍 Open Interactive Chart", callback_data=f"interactive:{chart_id}")]]
+    url = get_chart_url(chart_id)
+    if url:
+        rows = [[InlineKeyboardButton("🔍 Open Interactive Chart", web_app=WebAppInfo(url=url))]]
+    else:
+        rows = [[InlineKeyboardButton("🔍 Open Interactive Chart", callback_data=f"interactive:{chart_id}")]]
     if include_insights:
         rows.append([InlineKeyboardButton("📌 Generate Insights (5)", callback_data=f"insights:{chart_id}")])
     return InlineKeyboardMarkup(rows)
@@ -199,7 +203,7 @@ async def process_request(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: 
     try:
         # Get config from bot_data
         api_key = ctx.bot_data.get('gemini_api_key')
-        model = ctx.bot_data.get('gemini_model', 'gemini-2.5-flash')
+        model = ctx.bot_data.get('gemini_model', 'gemini-3-flash-preview')
         
         # Generate code
         datasets_info = session_manager.get_datasets_for_llm()
@@ -248,8 +252,9 @@ async def process_request(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: 
                 session_manager.store_insights_payload(chart_id, insights_payload)
             session_manager.add_message("bot", bot_response)
 
-            # Always provide action buttons via callbacks so we can re-issue fresh URLs later.
-            await update.message.reply_text("Chart actions:", reply_markup=_chart_actions_keyboard(chart_id, include_insights=True))
+            # Provide action buttons without any visible label.
+            # Telegram doesn't allow a truly empty message, so use a zero-width space.
+            await update.message.reply_text("\u200b", reply_markup=_chart_actions_keyboard(chart_id, include_insights=True))
         else:
             session_manager.add_message("bot", bot_response)
             
@@ -277,6 +282,7 @@ async def handle_insights_callback(update: Update, ctx: ContextTypes.DEFAULT_TYP
 
     chart_id = query.data.split(':', 1)[1].strip()
     if not chart_id:
+        await query.answer()
         await query.message.reply_text("❌ Invalid chart reference")
         return
 
@@ -297,7 +303,7 @@ async def handle_insights_callback(update: Update, ctx: ContextTypes.DEFAULT_TYP
         return
 
     api_key = ctx.bot_data.get('gemini_api_key')
-    model = ctx.bot_data.get('gemini_model', 'gemini-2.5-flash')
+    model = ctx.bot_data.get('gemini_model', 'gemini-3-flash-preview')
     if not api_key:
         await query.message.reply_text("❌ Gemini API key not configured")
         return
@@ -327,12 +333,10 @@ async def handle_insights_callback(update: Update, ctx: ContextTypes.DEFAULT_TYP
 
 
 async def handle_interactive_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Re-issue a fresh interactive WebApp URL for a chart (helps old charts after URL changes)."""
+    """Open interactive chart immediately (no extra message)."""
     query = update.callback_query
     if not query or not query.data:
         return
-
-    await query.answer()
 
     if not query.data.startswith("interactive:"):
         return
@@ -344,11 +348,12 @@ async def handle_interactive_callback(update: Update, ctx: ContextTypes.DEFAULT_
 
     url = get_chart_url(chart_id)
     if not url:
+        await query.answer()
         await query.message.reply_text("❌ Interactive view unavailable (web server not running)")
         return
 
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔍 Open Interactive Chart", web_app=WebAppInfo(url=url))]])
-    await query.message.reply_text("Open interactive chart:", reply_markup=kb)
+    # Opens the URL directly in the Telegram client (no follow-up message).
+    await query.answer(url=url)
 
 
 def setup_handlers(app: Application):

@@ -11,7 +11,7 @@ def generate_code(
     datasets: List[Dict[str, Any]],
     history: List[Dict[str, str]],
     api_key: str,
-    model: str = "gemini-2.5-flash"
+    model: str = "gemini-3-flash-preview"
 ) -> Tuple[Optional[str], Optional[str]]:
     """Generate visualization code using Gemini."""
     try:
@@ -39,7 +39,7 @@ def generate_code(
 def generate_insights(
     insights_payload: Dict[str, Any],
     api_key: str,
-    model: str = "gemini-2.5-flash"
+    model: str = "gemini-3-flash-preview"
 ) -> Tuple[Optional[str], Optional[str]]:
     """Generate actionable business insights from chart datapoints + dataset stats."""
     try:
