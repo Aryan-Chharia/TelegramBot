@@ -1,4 +1,4 @@
 # Prompts
-from .system import SYSTEM_PROMPT
+from .system import SYSTEM_PROMPT, INSIGHTS_PROMPT
 
-__all__ = ['SYSTEM_PROMPT']
+__all__ = ['SYSTEM_PROMPT', 'INSIGHTS_PROMPT']

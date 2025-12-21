@@ -27,12 +27,30 @@ app_logger.setLevel(logging.INFO)
 # API Keys
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = "gemini-2.5-pro"
+GEMINI_MODEL = "gemini-2.5-flash"
 
 # Web Server
 WEB_SERVER_PORT = int(os.getenv("PORT", os.getenv("WEB_SERVER_PORT", "5050")))  # Railway uses PORT
 NGROK_AUTH_TOKEN = os.getenv("NGROK_AUTH_TOKEN", "")
-RAILWAY_PUBLIC_URL = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")  # Auto-set by Railway
+
+
+def _running_on_railway() -> bool:
+    # Railway typically sets multiple RAILWAY_* vars in the runtime. We gate on those
+    # so a locally-stored RAILWAY_PUBLIC_DOMAIN in .env doesn't break local mode.
+    return any(
+        os.getenv(k)
+        for k in (
+            "RAILWAY_PROJECT_ID",
+            "RAILWAY_SERVICE_ID",
+            "RAILWAY_ENVIRONMENT_ID",
+            "RAILWAY_ENVIRONMENT_NAME",
+            "RAILWAY_REPLICA_ID",
+        )
+    )
+
+
+_railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")  # Auto-set by Railway
+RAILWAY_PUBLIC_URL = _railway_domain if (_railway_domain and _running_on_railway()) else ""
 
 # Paths
 UPLOAD_DIR = "uploads"

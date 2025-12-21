@@ -142,16 +142,30 @@ def start_server(session_manager, port: int = 5000, ngrok_token: str = None, rai
     """Start Flask + ngrok/Railway. Returns True if successful."""
     global _public_url, _session
     _session = session_manager
+
+    def _running_on_railway() -> bool:
+        return any(
+            os.getenv(k)
+            for k in (
+                "RAILWAY_PROJECT_ID",
+                "RAILWAY_SERVICE_ID",
+                "RAILWAY_ENVIRONMENT_ID",
+                "RAILWAY_ENVIRONMENT_NAME",
+                "RAILWAY_REPLICA_ID",
+            )
+        )
+
+    use_railway = bool(railway_url) and _running_on_railway()
     
     # Start Flask server using werkzeug directly
     from werkzeug.serving import make_server
     import socket
     
     # On Railway, bind to 0.0.0.0 (all interfaces)
-    host = '0.0.0.0' if railway_url else '127.0.0.1'
+    host = '0.0.0.0' if use_railway else '127.0.0.1'
     
     # Check if port is available (only for local)
-    if not railway_url:
+    if not use_railway:
         def is_port_available(p):
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 try:
@@ -186,8 +200,8 @@ def start_server(session_manager, port: int = 5000, ngrok_token: str = None, rai
         print(f"  ✗ Flask not responding: {e}")
         return False
     
-    # If Railway URL is provided, use it directly (no ngrok needed)
-    if railway_url:
+    # If Railway URL is provided AND we're on Railway, use it directly (no ngrok needed)
+    if use_railway:
         _public_url = f"https://{railway_url}"
         print(f"  ✓ Using Railway URL")
         return True

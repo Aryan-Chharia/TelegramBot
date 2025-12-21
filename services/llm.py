@@ -1,8 +1,9 @@
 """LLM integration - Gemini API"""
 import google.generativeai as genai
+import json
 from typing import List, Dict, Any, Tuple, Optional
 
-from prompts import SYSTEM_PROMPT
+from prompts import SYSTEM_PROMPT, INSIGHTS_PROMPT
 
 
 def generate_code(
@@ -10,7 +11,7 @@ def generate_code(
     datasets: List[Dict[str, Any]],
     history: List[Dict[str, str]],
     api_key: str,
-    model: str = "gemini-2.5-pro"
+    model: str = "gemini-2.5-flash"
 ) -> Tuple[Optional[str], Optional[str]]:
     """Generate visualization code using Gemini."""
     try:
@@ -31,6 +32,35 @@ def generate_code(
         
         return (code, None) if code else (None, "Could not extract code")
         
+    except Exception as e:
+        return None, str(e)
+
+
+def generate_insights(
+    insights_payload: Dict[str, Any],
+    api_key: str,
+    model: str = "gemini-2.5-flash"
+) -> Tuple[Optional[str], Optional[str]]:
+    """Generate actionable business insights from chart datapoints + dataset stats."""
+    try:
+        genai.configure(api_key=api_key)
+        llm = genai.GenerativeModel(model_name=model, system_instruction=INSIGHTS_PROMPT)
+
+        # Keep the input deterministic and reasonably compact.
+        payload_text = json.dumps(insights_payload, ensure_ascii=False, separators=(',', ':'), default=str)
+
+        user_prompt = (
+            "You are given a JSON payload with chart datapoints and dataset statistics. "
+            "Generate actionable business insights following your rules.\n\n"
+            "PAYLOAD:\n"
+            f"{payload_text}"
+        )
+
+        response = llm.generate_content(user_prompt)
+        text = (response.text or "").strip()
+        if not text:
+            return None, "Empty insights response"
+        return text, None
     except Exception as e:
         return None, str(e)
 

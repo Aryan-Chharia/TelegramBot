@@ -27,6 +27,8 @@ class SessionManager:
         self.datasets: Dict[str, DatasetInfo] = {}
         self.messages: List[dict] = []
         self._charts: Dict[str, str] = {}
+        self._insights_payloads: Dict[str, dict] = {}
+        self._insights_text: Dict[str, str] = {}
         self._storage_dir = storage_dir
         self._path = os.path.join(storage_dir, 'session.json')
         self._charts_dir = os.path.join(storage_dir, 'charts')
@@ -135,10 +137,61 @@ class SessionManager:
         except:
             pass
         return None
+
+    # Insights methods
+    def store_insights_payload(self, chart_id: str, payload: dict):
+        """Store insights payload to memory and disk for on-demand insights generation."""
+        self._insights_payloads[chart_id] = payload
+        try:
+            payload_path = os.path.join(self._charts_dir, f"{chart_id}_insights_payload.json")
+            with open(payload_path, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, separators=(',', ':'), ensure_ascii=False, default=str)
+        except:
+            pass
+
+    def get_insights_payload(self, chart_id: str) -> Optional[dict]:
+        """Get insights payload from memory or disk."""
+        if chart_id in self._insights_payloads:
+            return self._insights_payloads[chart_id]
+        try:
+            payload_path = os.path.join(self._charts_dir, f"{chart_id}_insights_payload.json")
+            if os.path.exists(payload_path):
+                with open(payload_path, 'r', encoding='utf-8') as f:
+                    payload = json.load(f)
+                self._insights_payloads[chart_id] = payload
+                return payload
+        except:
+            pass
+        return None
+
+    def set_insights_text(self, chart_id: str, text: str):
+        self._insights_text[chart_id] = text
+        try:
+            path = os.path.join(self._charts_dir, f"{chart_id}_insights.txt")
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(text)
+        except:
+            pass
+
+    def get_insights_text(self, chart_id: str) -> Optional[str]:
+        if chart_id in self._insights_text:
+            return self._insights_text.get(chart_id)
+        try:
+            path = os.path.join(self._charts_dir, f"{chart_id}_insights.txt")
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    text = f.read()
+                if text:
+                    self._insights_text[chart_id] = text
+                    return text
+        except:
+            pass
+        return None
     
     # Clear
     def clear(self):
         """Clear all data"""
+        # Best-effort remove dataset files we know about
         for d in self.datasets.values():
             try:
                 os.remove(d.file_path)
@@ -147,16 +200,29 @@ class SessionManager:
         self.datasets.clear()
         self.messages.clear()
         self._charts.clear()
-        # Clear chart files
+        self._insights_payloads.clear()
+        self._insights_text.clear()
+
+        # Clear ALL persisted files under uploads/ (handles orphaned CSVs, old payloads, etc.)
         try:
             import shutil
-            if os.path.exists(self._charts_dir):
-                shutil.rmtree(self._charts_dir)
-                os.makedirs(self._charts_dir, exist_ok=True)
+            if os.path.exists(self._storage_dir):
+                for name in os.listdir(self._storage_dir):
+                    p = os.path.join(self._storage_dir, name)
+                    try:
+                        if os.path.isdir(p):
+                            shutil.rmtree(p)
+                        else:
+                            os.remove(p)
+                    except:
+                        pass
         except:
             pass
+
+        # Recreate required folders
         try:
-            os.remove(self._path)
+            os.makedirs(self._storage_dir, exist_ok=True)
+            os.makedirs(self._charts_dir, exist_ok=True)
         except:
             pass
 

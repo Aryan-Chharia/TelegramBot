@@ -3,10 +3,30 @@ import os
 from io import BytesIO
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
 from core import session_manager, process_dataset, validate_file, generate_chart
-from services import generate_code, get_chart_url, get_preview_url
+from services import generate_code, generate_insights, get_chart_url, get_preview_url
+
+
+def _chart_actions_keyboard(chart_id: str, include_insights: bool = True) -> InlineKeyboardMarkup:
+    """Single-column layout to make buttons as wide as Telegram allows."""
+    rows = [[InlineKeyboardButton("🔍 Open Interactive Chart", callback_data=f"interactive:{chart_id}")]]
+    if include_insights:
+        rows.append([InlineKeyboardButton("📌 Generate Insights (5)", callback_data=f"insights:{chart_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _limit_insights_to_5(text: str) -> str:
+    """Enforce a hard cap of 5 bullets even if the model returns more."""
+    if not text:
+        return text
+    lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
+    bullets = [ln for ln in lines if ln.lstrip().startswith('-')]
+    if bullets:
+        return "\n".join(bullets[:5])
+    # Fallback: just cap to 5 non-empty lines
+    return "\n".join(lines[:5])
 
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -179,7 +199,7 @@ async def process_request(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: 
     try:
         # Get config from bot_data
         api_key = ctx.bot_data.get('gemini_api_key')
-        model = ctx.bot_data.get('gemini_model', 'gemini-2.5-pro')
+        model = ctx.bot_data.get('gemini_model', 'gemini-2.5-flash')
         
         # Generate code
         datasets_info = session_manager.get_datasets_for_llm()
@@ -201,7 +221,7 @@ async def process_request(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: 
         # Generate chart
         await msg.edit_text("📊 Creating chart...")
         paths = session_manager.get_dataset_paths()
-        success, output, png, fig_json, chart_id = generate_chart(code, paths)
+        success, output, png, fig_json, chart_id, insights_payload = generate_chart(code, paths)
         
         if not success:
             await msg.edit_text(f"❌ {output}")
@@ -224,14 +244,12 @@ async def process_request(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: 
         
         if fig_json and chart_id:
             session_manager.store_chart(chart_id, fig_json)
+            if insights_payload:
+                session_manager.store_insights_payload(chart_id, insights_payload)
             session_manager.add_message("bot", bot_response)
-            
-            url = get_chart_url(chart_id)
-            if url:
-                kb = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🔍 Interactive", web_app=WebAppInfo(url=url))
-                ]])
-                await update.message.reply_text("Tap for interactive chart:", reply_markup=kb)
+
+            # Always provide action buttons via callbacks so we can re-issue fresh URLs later.
+            await update.message.reply_text("Chart actions:", reply_markup=_chart_actions_keyboard(chart_id, include_insights=True))
         else:
             session_manager.add_message("bot", bot_response)
             
@@ -246,6 +264,93 @@ async def error_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("❌ Error occurred. Try /start")
 
 
+async def handle_insights_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Generate insights only when user taps the Insights button."""
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    await query.answer()
+
+    if not query.data.startswith("insights:"):
+        return
+
+    chart_id = query.data.split(':', 1)[1].strip()
+    if not chart_id:
+        await query.message.reply_text("❌ Invalid chart reference")
+        return
+
+    # One-time generation: if already generated (persisted), don't regenerate.
+    cached = session_manager.get_insights_text(chart_id)
+    if cached:
+        # Remove insights button if it still exists (older messages / failed edit)
+        try:
+            await query.edit_message_reply_markup(reply_markup=_chart_actions_keyboard(chart_id, include_insights=False))
+        except:
+            pass
+        await query.message.reply_text("⚠️ Insights already generated for this chart. Redraw the graph to generate again.")
+        return
+
+    payload = session_manager.get_insights_payload(chart_id)
+    if not payload:
+        await query.message.reply_text("⚠️ Insights unavailable for this chart. Please regenerate the chart.")
+        return
+
+    api_key = ctx.bot_data.get('gemini_api_key')
+    model = ctx.bot_data.get('gemini_model', 'gemini-2.5-flash')
+    if not api_key:
+        await query.message.reply_text("❌ Gemini API key not configured")
+        return
+
+    status = await query.message.reply_text("🔄 Generating insights...")
+    insights_text, insights_err = generate_insights(payload, api_key, model)
+    try:
+        await status.delete()
+    except:
+        pass
+
+    if insights_err or not insights_text:
+        await query.message.reply_text("❌ Failed to generate insights. Please try again.")
+        return
+
+    insights_text = _limit_insights_to_5(insights_text)
+
+    session_manager.set_insights_text(chart_id, insights_text)
+    session_manager.add_message("bot", f"Business insights:\n{insights_text}")
+    await query.message.reply_text(f"📌 Business insights\n\n{insights_text}")
+
+    # Hide Insights button after first successful generation
+    try:
+        await query.edit_message_reply_markup(reply_markup=_chart_actions_keyboard(chart_id, include_insights=False))
+    except:
+        pass
+
+
+async def handle_interactive_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Re-issue a fresh interactive WebApp URL for a chart (helps old charts after URL changes)."""
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    await query.answer()
+
+    if not query.data.startswith("interactive:"):
+        return
+
+    chart_id = query.data.split(':', 1)[1].strip()
+    if not chart_id:
+        await query.message.reply_text("❌ Invalid chart reference")
+        return
+
+    url = get_chart_url(chart_id)
+    if not url:
+        await query.message.reply_text("❌ Interactive view unavailable (web server not running)")
+        return
+
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔍 Open Interactive Chart", web_app=WebAppInfo(url=url))]])
+    await query.message.reply_text("Open interactive chart:", reply_markup=kb)
+
+
 def setup_handlers(app: Application):
     """Register all handlers"""
     app.add_handler(CommandHandler("start", cmd_start))
@@ -253,6 +358,8 @@ def setup_handlers(app: Application):
     app.add_handler(CommandHandler("datasets", cmd_datasets))
     app.add_handler(CommandHandler("preview", cmd_preview))
     app.add_handler(CommandHandler("clear", cmd_clear))
+    app.add_handler(CallbackQueryHandler(handle_interactive_callback, pattern=r"^interactive:"))
+    app.add_handler(CallbackQueryHandler(handle_insights_callback, pattern=r"^insights:"))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
