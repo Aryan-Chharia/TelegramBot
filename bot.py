@@ -2,7 +2,7 @@
 from telegram import BotCommand, MenuButtonCommands, Update
 from telegram.ext import Application
 
-from config import TELEGRAM_BOT_TOKEN, GEMINI_API_KEY, GEMINI_MODEL, UPLOAD_DIR, WEB_SERVER_PORT, NGROK_AUTH_TOKEN, RAILWAY_PUBLIC_URL
+from config import TELEGRAM_BOT_TOKEN, GEMINI_API_KEY, GEMINI_MODEL, UPLOAD_DIR, WEB_SERVER_PORT, RAILWAY_PUBLIC_URL
 from core import session_manager
 from services import start_server, get_public_url
 from handlers import setup_handlers
@@ -41,7 +41,7 @@ def main():
     
     # Start web server
     print("\n[Web Server]")
-    if start_server(session_manager, WEB_SERVER_PORT, NGROK_AUTH_TOKEN or None, RAILWAY_PUBLIC_URL or None):
+    if start_server(session_manager, WEB_SERVER_PORT, RAILWAY_PUBLIC_URL or None):
         print(f"✓ Public URL: {get_public_url()}")
     else:
         print("✗ Web server failed - interactive charts disabled")

@@ -1,4 +1,7 @@
-"""Web server for interactive charts (Flask + ngrok)"""
+"""Web server for interactive charts (Flask).
+
+This server is intended to be deployed behind a stable public HTTPS URL (e.g. Railway).
+"""
 import os
 import threading
 import time
@@ -20,12 +23,6 @@ with open(os.path.join(_templates_dir, 'chart.html'), 'r', encoding='utf-8') as 
 
 with open(os.path.join(_templates_dir, 'preview.html'), 'r', encoding='utf-8') as f:
     PREVIEW_TEMPLATE = f.read()
-
-
-@app.after_request
-def headers(response):
-    response.headers['ngrok-skip-browser-warning'] = 'true'
-    return response
 
 
 @app.route('/chart/<chart_id>')
@@ -138,34 +135,33 @@ def health():
     return {"status": "ok", "url": _public_url}
 
 
-def start_server(session_manager, port: int = 5000, ngrok_token: str = None, railway_url: str = None) -> bool:
-    """Start Flask + ngrok/Railway. Returns True if successful."""
+def start_server(session_manager, port: int = 5000, public_url: str = None) -> bool:
+    """Start Flask and configure a public base URL.
+
+    For interactive charts to work inside Telegram, the service must be reachable from
+    the user's device. In production, this should be a stable public HTTPS URL
+    (e.g. Railway public domain).
+    """
     global _public_url, _session
     _session = session_manager
 
-    def _running_on_railway() -> bool:
-        return any(
-            os.getenv(k)
-            for k in (
-                "RAILWAY_PROJECT_ID",
-                "RAILWAY_SERVICE_ID",
-                "RAILWAY_ENVIRONMENT_ID",
-                "RAILWAY_ENVIRONMENT_NAME",
-                "RAILWAY_REPLICA_ID",
-            )
-        )
-
-    use_railway = bool(railway_url) and _running_on_railway()
+    explicit_public = (
+        public_url
+        or os.getenv("PUBLIC_URL")
+        or os.getenv("RAILWAY_PUBLIC_DOMAIN")
+        or os.getenv("RAILWAY_STATIC_URL")
+    )
     
     # Start Flask server using werkzeug directly
     from werkzeug.serving import make_server
     import socket
     
-    # On Railway, bind to 0.0.0.0 (all interfaces)
-    host = '0.0.0.0' if use_railway else '127.0.0.1'
+    # In production (and for any external access), bind to all interfaces.
+    host = '0.0.0.0' if explicit_public else '127.0.0.1'
     
-    # Check if port is available (only for local)
-    if not use_railway:
+    # Check if port is available (only for local). If the preferred port is busy,
+    # automatically choose the next free port.
+    if not explicit_public:
         def is_port_available(p):
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 try:
@@ -173,10 +169,20 @@ def start_server(session_manager, port: int = 5000, ngrok_token: str = None, rai
                     return True
                 except:
                     return False
-        
-        if not is_port_available(port):
+
+        chosen_port = None
+        for candidate in range(port, port + 25):
+            if is_port_available(candidate):
+                chosen_port = candidate
+                break
+
+        if chosen_port is None:
             print(f"  ✗ Port {port} is in use")
             return False
+
+        if chosen_port != port:
+            print(f"  ⚠️ Port {port} is in use; using {chosen_port}")
+            port = chosen_port
     
     try:
         server = make_server(host, port, app, threaded=True)
@@ -200,40 +206,17 @@ def start_server(session_manager, port: int = 5000, ngrok_token: str = None, rai
         print(f"  ✗ Flask not responding: {e}")
         return False
     
-    # If Railway URL is provided AND we're on Railway, use it directly (no ngrok needed)
-    if use_railway:
-        _public_url = f"https://{railway_url}"
-        print(f"  ✓ Using Railway URL")
+    # Configure public base URL (required for Telegram WebApp buttons).
+    if explicit_public:
+        if explicit_public.startswith("http://") or explicit_public.startswith("https://"):
+            _public_url = explicit_public
+        else:
+            _public_url = f"https://{explicit_public}"
+        print("  ✓ Using public URL")
         return True
-    
-    # Otherwise, use ngrok for local development
-    try:
-        from pyngrok import ngrok, conf
-        
-        if ngrok_token:
-            conf.get_default().auth_token = ngrok_token
-        
-        try:
-            ngrok.kill()
-            time.sleep(1)  # Wait for ngrok to fully stop
-        except:
-            pass
-        
-        # Connect with bind_tls=True for proper HTTPS
-        tunnel = ngrok.connect(str(port), "http", bind_tls=True)
-        _public_url = str(tunnel.public_url)
-        
-        # Ensure HTTPS
-        if _public_url.startswith("http://"):
-            _public_url = _public_url.replace("http://", "https://")
-        
-        print(f"  ✓ ngrok tunnel created")
-        
-    except Exception as e:
-        print(f"  ✗ ngrok error: {e}")
-        return False
-    
-    return True
+
+    print("  ⚠️ PUBLIC_URL not set - interactive charts disabled")
+    return False
 
 
 def get_public_url() -> str:

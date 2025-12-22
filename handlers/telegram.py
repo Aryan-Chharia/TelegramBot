@@ -12,10 +12,9 @@ from services import generate_code, generate_insights, get_chart_url, get_previe
 def _chart_actions_keyboard(chart_id: str, include_insights: bool = True) -> InlineKeyboardMarkup:
     """Single-column layout to make buttons as wide as Telegram allows."""
     url = get_chart_url(chart_id)
+    rows = []
     if url:
-        rows = [[InlineKeyboardButton("🔍 Open Interactive Chart", web_app=WebAppInfo(url=url))]]
-    else:
-        rows = [[InlineKeyboardButton("🔍 Open Interactive Chart", callback_data=f"interactive:{chart_id}")]]
+        rows.append([InlineKeyboardButton("🔍 Open Interactive Chart", web_app=WebAppInfo(url=url))])
     if include_insights:
         rows.append([InlineKeyboardButton("📌 Generate Insights (5)", callback_data=f"insights:{chart_id}")])
     return InlineKeyboardMarkup(rows)
@@ -254,7 +253,10 @@ async def process_request(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: 
 
             # Provide action buttons without any visible label.
             # Telegram doesn't allow a truly empty message, so use a zero-width space.
-            await update.message.reply_text("\u200b", reply_markup=_chart_actions_keyboard(chart_id, include_insights=True))
+            try:
+                await update.message.reply_text("\u200b", reply_markup=_chart_actions_keyboard(chart_id, include_insights=True))
+            except Exception:
+                await update.message.reply_text("⚠️ Buttons unavailable. Please ensure the Web App domain is allowed in BotFather and try again.")
         else:
             session_manager.add_message("bot", bot_response)
             
@@ -332,28 +334,6 @@ async def handle_insights_callback(update: Update, ctx: ContextTypes.DEFAULT_TYP
         pass
 
 
-async def handle_interactive_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Open interactive chart immediately (no extra message)."""
-    query = update.callback_query
-    if not query or not query.data:
-        return
-
-    if not query.data.startswith("interactive:"):
-        return
-
-    chart_id = query.data.split(':', 1)[1].strip()
-    if not chart_id:
-        await query.message.reply_text("❌ Invalid chart reference")
-        return
-
-    url = get_chart_url(chart_id)
-    if not url:
-        await query.answer()
-        await query.message.reply_text("❌ Interactive view unavailable (web server not running)")
-        return
-
-    # Opens the URL directly in the Telegram client (no follow-up message).
-    await query.answer(url=url)
 
 
 def setup_handlers(app: Application):
@@ -363,7 +343,6 @@ def setup_handlers(app: Application):
     app.add_handler(CommandHandler("datasets", cmd_datasets))
     app.add_handler(CommandHandler("preview", cmd_preview))
     app.add_handler(CommandHandler("clear", cmd_clear))
-    app.add_handler(CallbackQueryHandler(handle_interactive_callback, pattern=r"^interactive:"))
     app.add_handler(CallbackQueryHandler(handle_insights_callback, pattern=r"^insights:"))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

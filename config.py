@@ -15,7 +15,7 @@ logging.basicConfig(
 )
 
 # Suppress noisy loggers completely
-for noisy in ['httpx', 'httpcore', 'urllib3', 'pyngrok', 'ngrok', 
+for noisy in ['httpx', 'httpcore', 'urllib3',
               'werkzeug', 'google', 'telegram', 'asyncio']:
     logging.getLogger(noisy).setLevel(logging.CRITICAL)
 
@@ -31,7 +31,6 @@ GEMINI_MODEL = "gemini-3-flash-preview"
 
 # Web Server
 WEB_SERVER_PORT = int(os.getenv("PORT", os.getenv("WEB_SERVER_PORT", "5050")))  # Railway uses PORT
-NGROK_AUTH_TOKEN = os.getenv("NGROK_AUTH_TOKEN", "")
 
 
 def _running_on_railway() -> bool:
@@ -49,8 +48,18 @@ def _running_on_railway() -> bool:
     )
 
 
-_railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")  # Auto-set by Railway
-RAILWAY_PUBLIC_URL = _railway_domain if (_railway_domain and _running_on_railway()) else ""
+_explicit_public = (
+    os.getenv("PUBLIC_URL")
+    or os.getenv("RAILWAY_PUBLIC_DOMAIN")
+    or os.getenv("RAILWAY_STATIC_URL")
+)
+
+# If an explicit public URL is provided, prefer it. Otherwise fall back to Railway-only detection.
+if _explicit_public:
+    RAILWAY_PUBLIC_URL = _explicit_public
+else:
+    _railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")  # Auto-set by Railway
+    RAILWAY_PUBLIC_URL = _railway_domain if (_railway_domain and _running_on_railway()) else ""
 
 # Paths
 UPLOAD_DIR = "uploads"
