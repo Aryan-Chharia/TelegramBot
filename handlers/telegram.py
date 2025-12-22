@@ -251,12 +251,14 @@ async def process_request(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: 
                 session_manager.store_insights_payload(chart_id, insights_payload)
             session_manager.add_message("bot", bot_response)
 
-            # Provide action buttons without any visible label.
-            # Telegram doesn't allow a truly empty message, so use a zero-width space.
+            # Provide action buttons
+            keyboard = _chart_actions_keyboard(chart_id, include_insights=True)
             try:
-                await update.message.reply_text("\u200b", reply_markup=_chart_actions_keyboard(chart_id, include_insights=True))
-            except Exception:
-                await update.message.reply_text("⚠️ Buttons unavailable. Please ensure the Web App domain is allowed in BotFather and try again.")
+                await update.message.reply_text("📊 Chart ready! Tap below:", reply_markup=keyboard)
+            except Exception as btn_err:
+                # Log the actual error for debugging
+                print(f"[Button Error] {type(btn_err).__name__}: {btn_err}")
+                await update.message.reply_text(f"⚠️ Buttons unavailable: {btn_err}")
         else:
             session_manager.add_message("bot", bot_response)
             
