@@ -191,7 +191,7 @@ fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='#E5E5E5', title_font_siz
 - **Bar**: `text_auto=True`, sort by value, limit to top 10-15
 - **Line**: `markers=True`, clear date formatting, smooth curves for trends
 - **Pie/Donut**: `hole=0.4`, `textinfo='percent+label'`, max 7 slices (group rest as "Other")
-- **Scatter**: Size/color encoding for 3rd/4th dimensions, add trendline if relevant
+- **Scatter**: Size/color encoding for 3rd/4th dimensions (do NOT use `trendline=`)
 - **Histogram**: Appropriate bin count, consider showing distribution curve
 
 ### Data Handling (CRITICAL)

@@ -1,4 +1,5 @@
 """Chart generation and code execution"""
+import re
 import json
 import time
 import pandas as pd
@@ -9,6 +10,69 @@ from plotly.utils import PlotlyJSONEncoder
 from typing import Dict, Tuple, Optional, Any, List, Iterable
 
 from .datasets import load_dataframe
+
+
+def _strip_imports_for_missing_module(code: str, missing_module: str) -> str:
+    """Remove only import statements that reference a missing module.
+
+    This is intentionally conservative: we do NOT strip all imports because
+    that can turn a recoverable ModuleNotFoundError into an unrelated NameError.
+    """
+    if not code or not missing_module:
+        return code
+
+    mod = re.escape(missing_module)
+    # Match:
+    # - import statsmodels
+    # - import statsmodels.api as sm
+    # - from statsmodels.api import OLS
+    # - from statsmodels import api
+    pat = re.compile(
+        rf"^\s*(import\s+{mod}(?:\.|\s|,|$).*|from\s+{mod}(?:\.|\s).*?)$",
+        re.IGNORECASE,
+    )
+
+    out_lines: List[str] = []
+    for line in code.splitlines():
+        if pat.match(line):
+            continue
+        out_lines.append(line)
+    return '\n'.join(out_lines)
+
+
+def _strip_plotly_trendline_args(code: str) -> str:
+    """Remove Plotly Express trendline kwargs (require optional dependency statsmodels)."""
+    if not code:
+        return code
+
+    # Remove keyword arguments that trigger statsmodels usage.
+    # Handles: trendline=..., trendline_options=..., trendline_color_override=...
+    pattern = re.compile(
+        r"(,\s*(trendline|trendline_options|trendline_color_override)\s*=\s*(?:[^,()\n]+|\([^)]*\)|\[[^\]]*\]|\{[^\}]*\}))",
+        re.IGNORECASE,
+    )
+    code = re.sub(pattern, '', code)
+    # Also handle cases where the kwarg is the first argument after '('
+    pattern_first = re.compile(
+        r"(\(\s*(trendline|trendline_options|trendline_color_override)\s*=\s*(?:[^,()\n]+|\([^)]*\)|\[[^\]]*\]|\{[^\}]*\})\s*,)",
+        re.IGNORECASE,
+    )
+    code = re.sub(pattern_first, '(', code)
+    return code
+
+
+def _sanitize_llm_code_for_runtime(code: str, missing_module: Optional[str] = None) -> str:
+    """Best-effort sanitizer to avoid optional dependency crashes."""
+    # Proactively remove trendlines even if we haven't seen an error yet.
+    code = _strip_plotly_trendline_args(code)
+
+    if missing_module:
+        code = _strip_imports_for_missing_module(code, missing_module)
+        m = missing_module.lower()
+        if m.startswith('statsmodels') or m.startswith('statsmodel'):
+            # Plotly Express trendlines require statsmodels.
+            code = _strip_plotly_trendline_args(code)
+    return code
 
 
 def execute_code(code: str, datasets: Dict[str, pd.DataFrame]) -> Tuple[bool, str, Optional[go.Figure]]:
@@ -30,26 +94,51 @@ def execute_code(code: str, datasets: Dict[str, pd.DataFrame]) -> Tuple[bool, st
     }
     local = {}
     
-    try:
-        exec(code, env, local)
-        
-        fig = local.get('fig') or env.get('fig')
-        summary = local.get('summary') or env.get('summary', 'Visualization generated.')
-        
-        if fig is None:
-            return False, "Code did not create 'fig' variable", None
-        if not isinstance(fig, go.Figure):
-            return False, f"'fig' is not a Plotly figure (got {type(fig).__name__})", None
-        
-        fig.update_layout(template='plotly_white', margin={'t': 60, 'b': 60, 'l': 60, 'r': 40})
-        return True, str(summary), fig
-        
-    except SyntaxError as e:
-        return False, f"Syntax error: {e}", None
-    except KeyError as e:
-        return False, f"Column not found: {e}", None
-    except Exception as e:
-        return False, f"{type(e).__name__}: {e}", None
+    # Pre-sanitize to reduce crashes from optional dependencies.
+    code_to_run = _sanitize_llm_code_for_runtime(code)
+
+    def run_once(src: str) -> Tuple[bool, str, Optional[go.Figure]]:
+        try:
+            exec(src, env, local)
+
+            fig = local.get('fig') or env.get('fig')
+            summary = local.get('summary') or env.get('summary', 'Visualization generated.')
+
+            if fig is None:
+                return False, "Code did not create 'fig' variable", None
+            if not isinstance(fig, go.Figure):
+                return False, f"'fig' is not a Plotly figure (got {type(fig).__name__})", None
+
+            fig.update_layout(template='plotly_white', margin={'t': 60, 'b': 60, 'l': 60, 'r': 40})
+            return True, str(summary), fig
+
+        except SyntaxError as e:
+            return False, f"Syntax error: {e}", None
+        except KeyError as e:
+            return False, f"Column not found: {e}", None
+        except Exception as e:
+            return False, f"{type(e).__name__}: {e}", None
+
+    # First attempt
+    ok, msg, fig = run_once(code_to_run)
+    if ok:
+        return ok, msg, fig
+
+    # Retry on missing optional dependencies (common with Plotly Express trendlines).
+    missing_mod: Optional[str] = None
+    if 'No module named' in msg:
+        m = re.search(r"No module named ['\"]?([a-zA-Z0-9_\.\-]+)['\"]?", msg)
+        if m:
+            missing_mod = m.group(1)
+
+    if missing_mod:
+        repaired = _sanitize_llm_code_for_runtime(code, missing_module=missing_mod)
+        ok2, msg2, fig2 = run_once(repaired)
+        if ok2:
+            return ok2, msg2, fig2
+        return ok2, msg2, fig2
+
+    return ok, msg, fig
 
 
 def figure_to_png(fig: go.Figure, width: int = 1200, height: int = 800) -> bytes:
