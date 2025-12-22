@@ -5,19 +5,33 @@ from io import BytesIO
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
-from core import session_manager, process_dataset, validate_file, generate_chart
+from core import session_manager, process_dataset, validate_file, generate_chart, bandit, CODE_ARMS, INSIGHTS_ARMS
 from services import generate_code, generate_insights, generate_recommendations, get_chart_url, get_preview_url
 
 
-def _chart_actions_keyboard(chart_id: str, include_insights: bool = True) -> InlineKeyboardMarkup:
-    """Single-column layout to make buttons as wide as Telegram allows."""
+def _chart_actions_keyboard(chart_id: str, arm_id: str = None, include_insights: bool = True) -> InlineKeyboardMarkup:
+    """Single-column layout with chart actions and feedback buttons."""
     url = get_chart_url(chart_id)
     rows = []
     if url:
         rows.append([InlineKeyboardButton("🔍 Open Interactive Chart", web_app=WebAppInfo(url=url))])
     if include_insights:
         rows.append([InlineKeyboardButton("📌 Generate Insights (5)", callback_data=f"insights:{chart_id}")])
+    # Add feedback buttons if arm_id provided
+    if arm_id:
+        rows.append([
+            InlineKeyboardButton("👍", callback_data=f"feedback:1:{arm_id}:{chart_id}"),
+            InlineKeyboardButton("👎", callback_data=f"feedback:0:{arm_id}:{chart_id}")
+        ])
     return InlineKeyboardMarkup(rows)
+
+
+def _feedback_keyboard(arm_id: str, context_id: str) -> InlineKeyboardMarkup:
+    """Feedback buttons for insights or standalone feedback."""
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("👍", callback_data=f"feedback:1:{arm_id}:{context_id}"),
+        InlineKeyboardButton("👎", callback_data=f"feedback:0:{arm_id}:{context_id}")
+    ]])
 
 
 def _limit_insights_to_5(text: str) -> str:
@@ -69,22 +83,23 @@ Just describe what you want in plain English:
 • "Pie chart showing category distribution"
 • "Scatter plot of price vs quantity"
 
-**Step 4: Interact**
-Tap "Interactive" button to zoom, pan, and explore your chart!
+**Step 4: Interact & Give Feedback**
+• Tap "Interactive" button to zoom, pan, and explore
+• Use 👍/👎 to rate results - this helps improve the AI!
 
 **Commands:**
 /start - Check bot status & your datasets
 /datasets - See details of uploaded files
 /preview - View the actual data in your CSV
 /recommend - Get AI chart recommendations
+/bandit - View A/B test statistics
 /clear - Remove all files & start over
 /help - Show this guide
 
 **Tips:**
 💡 Use /recommend 10 for more suggestions (3-15)
-💡 Be specific with column names for best results
-💡 You can ask follow-up questions to refine charts
-💡 Upload multiple CSVs to compare different datasets""", parse_mode='Markdown')
+💡 Your feedback helps the AI learn which prompts work best
+💡 Use /bandit to see how the AI is learning from feedback""", parse_mode='Markdown')
 
 
 async def cmd_datasets(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -307,11 +322,11 @@ async def process_request(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: 
         api_key = ctx.bot_data.get('gemini_api_key')
         model = ctx.bot_data.get('gemini_model', 'gemini-3-flash-preview')
         
-        # Generate code
+        # Generate code (now returns arm_id for bandit tracking)
         datasets_info = session_manager.get_datasets_for_llm()
         history = session_manager.get_history()[:-1]
         
-        code, error = generate_code(text, datasets_info, history, api_key, model)
+        code, error, arm_id = generate_code(text, datasets_info, history, api_key, model)
         if error:
             await msg.edit_text(f"❌ {error}")
             session_manager.add_message("bot", f"Error: {error}")
@@ -352,12 +367,15 @@ async def process_request(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: 
             session_manager.store_chart(chart_id, fig_json)
             if insights_payload:
                 session_manager.store_insights_payload(chart_id, insights_payload)
+            # Store arm_id for feedback tracking
+            if arm_id:
+                session_manager.store_arm_id(chart_id, arm_id)
             session_manager.add_message("bot", bot_response)
 
-            # Provide action buttons
-            keyboard = _chart_actions_keyboard(chart_id, include_insights=True)
+            # Provide action buttons with feedback
+            keyboard = _chart_actions_keyboard(chart_id, arm_id=arm_id, include_insights=True)
             try:
-                await update.message.reply_text("📊 Chart ready! Tap below:", reply_markup=keyboard)
+                await update.message.reply_text("📊 Chart ready! Rate this result:", reply_markup=keyboard)
             except Exception as btn_err:
                 # Log the actual error for debugging
                 print(f"[Button Error] {type(btn_err).__name__}: {btn_err}")
@@ -398,7 +416,11 @@ async def handle_insights_callback(update: Update, ctx: ContextTypes.DEFAULT_TYP
     if cached:
         # Remove insights button if it still exists (older messages / failed edit)
         try:
-            await query.edit_message_reply_markup(reply_markup=_chart_actions_keyboard(chart_id, include_insights=False))
+            # Get stored arm_id for the chart to preserve feedback buttons
+            stored_arm_id = session_manager.get_arm_id(chart_id)
+            await query.edit_message_reply_markup(
+                reply_markup=_chart_actions_keyboard(chart_id, arm_id=stored_arm_id, include_insights=False)
+            )
         except:
             pass
         await query.message.reply_text("⚠️ Insights already generated for this chart. Redraw the graph to generate again.")
@@ -416,7 +438,7 @@ async def handle_insights_callback(update: Update, ctx: ContextTypes.DEFAULT_TYP
         return
 
     status = await query.message.reply_text("🔄 Generating insights...")
-    insights_text, insights_err = generate_insights(payload, api_key, model)
+    insights_text, insights_err, insights_arm_id = generate_insights(payload, api_key, model)
     try:
         await status.delete()
     except:
@@ -430,13 +452,142 @@ async def handle_insights_callback(update: Update, ctx: ContextTypes.DEFAULT_TYP
 
     session_manager.set_insights_text(chart_id, insights_text)
     session_manager.add_message("bot", f"Business insights:\n{insights_text}")
-    await query.message.reply_text(f"📌 Business insights\n\n{insights_text}")
+    
+    # Send insights with feedback buttons
+    insights_msg = f"📌 Business insights\n\n{insights_text}"
+    if insights_arm_id:
+        # Store insights arm_id separately
+        session_manager.store_arm_id(f"insights_{chart_id}", insights_arm_id)
+        keyboard = _feedback_keyboard(insights_arm_id, f"insights_{chart_id}")
+        await query.message.reply_text(insights_msg, reply_markup=keyboard)
+    else:
+        await query.message.reply_text(insights_msg)
 
-    # Hide Insights button after first successful generation
+    # Hide Insights button after first successful generation, keep feedback buttons
     try:
-        await query.edit_message_reply_markup(reply_markup=_chart_actions_keyboard(chart_id, include_insights=False))
+        stored_arm_id = session_manager.get_arm_id(chart_id)
+        await query.edit_message_reply_markup(
+            reply_markup=_chart_actions_keyboard(chart_id, arm_id=stored_arm_id, include_insights=False)
+        )
     except:
         pass
+
+
+async def handle_feedback_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Handle thumbs up/down feedback for bandit learning."""
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    if not query.data.startswith("feedback:"):
+        return
+
+    # Parse callback data: feedback:reward:arm_id:context_id
+    parts = query.data.split(':', 3)
+    if len(parts) < 4:
+        await query.answer("Invalid feedback data")
+        return
+
+    _, reward_str, arm_id, context_id = parts
+    
+    try:
+        reward = int(reward_str)
+        if reward not in (0, 1):
+            raise ValueError("Invalid reward")
+    except ValueError:
+        await query.answer("Invalid feedback")
+        return
+
+    # Update bandit with feedback
+    stats = bandit.update(arm_id, reward)
+    
+    # Show confirmation and remove feedback buttons
+    feedback_emoji = "👍" if reward == 1 else "👎"
+    await query.answer(f"Thanks for your feedback! {feedback_emoji}")
+    
+    # Remove the feedback buttons from the message
+    try:
+        # Get current message text and rebuild without feedback buttons
+        current_text = query.message.text or ""
+        if "Chart ready" in current_text:
+            # This is a chart action message - rebuild with just chart buttons
+            chart_id = context_id
+            url = get_chart_url(chart_id)
+            rows = []
+            if url:
+                rows.append([InlineKeyboardButton("🔍 Open Interactive Chart", web_app=WebAppInfo(url=url))])
+            # Check if insights were already generated
+            if not session_manager.get_insights_text(chart_id):
+                rows.append([InlineKeyboardButton("📌 Generate Insights (5)", callback_data=f"insights:{chart_id}")])
+            rows.append([InlineKeyboardButton(f"✓ Rated {feedback_emoji}", callback_data="noop")])
+            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(rows))
+        else:
+            # This is an insights message - just show rated confirmation
+            await query.edit_message_reply_markup(
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(f"✓ Rated {feedback_emoji}", callback_data="noop")
+                ]])
+            )
+    except Exception:
+        pass  # Message might not be editable
+
+
+async def handle_noop_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Handle no-op callbacks (rated buttons)."""
+    query = update.callback_query
+    if query:
+        await query.answer("Already rated!")
+
+
+async def cmd_bandit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Handle /bandit - Show bandit statistics for A/B testing."""
+    all_stats = bandit.get_all_stats()
+    
+    if not all_stats:
+        await update.message.reply_text(
+            "📊 **Bandit Statistics**\n\nNo data yet. Generate some charts and provide feedback!",
+            parse_mode='Markdown'
+        )
+        return
+    
+    # Format statistics
+    lines = ["📊 **Thompson Bandit A/B Test Results**\n"]
+    
+    # Group by stage
+    code_stats = {k: v for k, v in all_stats.items() if k.startswith('code_')}
+    insights_stats = {k: v for k, v in all_stats.items() if k.startswith('insights_')}
+    
+    if code_stats:
+        lines.append("**📈 Code Generation Prompts:**")
+        for arm_id, stats in sorted(code_stats.items()):
+            version = arm_id.replace('code_', '').upper()
+            exp_val = stats.expected_value
+            success_pct = (stats.alpha - 1) / max(stats.pulls, 1) * 100 if stats.pulls > 0 else 0
+            lines.append(
+                f"  • **{version}**: {stats.pulls} pulls | "
+                f"👍 {int(stats.alpha - 1)} | 👎 {int(stats.beta - 1)} | "
+                f"Win rate: {success_pct:.1f}% | E[p]: {exp_val:.3f}"
+            )
+        lines.append("")
+    
+    if insights_stats:
+        lines.append("**💡 Insights Prompts:**")
+        for arm_id, stats in sorted(insights_stats.items()):
+            version = arm_id.replace('insights_', '').upper()
+            exp_val = stats.expected_value
+            success_pct = (stats.alpha - 1) / max(stats.pulls, 1) * 100 if stats.pulls > 0 else 0
+            lines.append(
+                f"  • **{version}**: {stats.pulls} pulls | "
+                f"👍 {int(stats.alpha - 1)} | 👎 {int(stats.beta - 1)} | "
+                f"Win rate: {success_pct:.1f}% | E[p]: {exp_val:.3f}"
+            )
+        lines.append("")
+    
+    # Add explanation
+    lines.append("_Thompson Sampling automatically favors better-performing prompts over time._")
+    lines.append("_E[p] = Expected probability of success (higher = better)_")
+    
+    await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
 
 
 
@@ -449,7 +600,10 @@ def setup_handlers(app: Application):
     app.add_handler(CommandHandler("preview", cmd_preview))
     app.add_handler(CommandHandler("clear", cmd_clear))
     app.add_handler(CommandHandler("recommend", cmd_recommend))
+    app.add_handler(CommandHandler("bandit", cmd_bandit))
     app.add_handler(CallbackQueryHandler(handle_insights_callback, pattern=r"^insights:"))
+    app.add_handler(CallbackQueryHandler(handle_feedback_callback, pattern=r"^feedback:"))
+    app.add_handler(CallbackQueryHandler(handle_noop_callback, pattern=r"^noop$"))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)

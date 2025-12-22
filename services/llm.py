@@ -3,7 +3,8 @@ import google.generativeai as genai
 import json
 from typing import List, Dict, Any, Tuple, Optional
 
-from prompts import SYSTEM_PROMPT, INSIGHTS_PROMPT, RECOMMENDATIONS_PROMPT
+from prompts import SYSTEM_PROMPT, INSIGHTS_PROMPT, RECOMMENDATIONS_PROMPT, SYSTEM_PROMPTS, INSIGHTS_PROMPTS
+from core.bandit import bandit, CODE_ARMS, INSIGHTS_ARMS
 
 
 def generate_code(
@@ -11,12 +12,35 @@ def generate_code(
     datasets: List[Dict[str, Any]],
     history: List[Dict[str, str]],
     api_key: str,
-    model: str = "gemini-3-flash-preview"
-) -> Tuple[Optional[str], Optional[str]]:
-    """Generate visualization code using Gemini."""
+    model: str = "gemini-3-flash-preview",
+    prompt_version: Optional[str] = None
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    Generate visualization code using Gemini.
+    
+    Args:
+        prompt: User's visualization request
+        datasets: List of dataset info dicts
+        history: Conversation history
+        api_key: Gemini API key
+        model: Model name
+        prompt_version: Optional override ('v1' or 'v2'). If None, uses bandit selection.
+    
+    Returns:
+        Tuple of (code, error, arm_id)
+    """
     try:
+        # Select prompt using bandit or use override
+        if prompt_version:
+            system_prompt = SYSTEM_PROMPTS.get(prompt_version, SYSTEM_PROMPT)
+            arm_id = f"code_{prompt_version}"
+        else:
+            arm = bandit.choose("code", CODE_ARMS)
+            system_prompt = SYSTEM_PROMPTS.get(arm.prompt_version, SYSTEM_PROMPT)
+            arm_id = arm.arm_id
+        
         genai.configure(api_key=api_key)
-        llm = genai.GenerativeModel(model_name=model, system_instruction=SYSTEM_PROMPT)
+        llm = genai.GenerativeModel(model_name=model, system_instruction=system_prompt)
         
         # Build comprehensive prompt with all context
         user_prompt = _build_prompt(prompt, datasets, history)
@@ -26,25 +50,46 @@ def generate_code(
         
         # Check for rejection FIRST (before code extraction)
         if text.startswith("REJECT:"):
-            return (text, None)  # Return the rejection as "code" to be handled by caller
+            return (text, None, arm_id)  # Return the rejection as "code" to be handled by caller
         
         code = _extract_code(text)
         
-        return (code, None) if code else (None, "Could not extract code")
+        return (code, None, arm_id) if code else (None, "Could not extract code", arm_id)
         
     except Exception as e:
-        return None, str(e)
+        return None, str(e), None
 
 
 def generate_insights(
     insights_payload: Dict[str, Any],
     api_key: str,
-    model: str = "gemini-3-flash-preview"
-) -> Tuple[Optional[str], Optional[str]]:
-    """Generate actionable business insights from chart datapoints + dataset stats."""
+    model: str = "gemini-3-flash-preview",
+    prompt_version: Optional[str] = None
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    Generate actionable business insights from chart datapoints + dataset stats.
+    
+    Args:
+        insights_payload: Chart data and statistics
+        api_key: Gemini API key
+        model: Model name
+        prompt_version: Optional override ('v1' or 'v2'). If None, uses bandit selection.
+    
+    Returns:
+        Tuple of (insights_text, error, arm_id)
+    """
     try:
+        # Select prompt using bandit or use override
+        if prompt_version:
+            system_prompt = INSIGHTS_PROMPTS.get(prompt_version, INSIGHTS_PROMPT)
+            arm_id = f"insights_{prompt_version}"
+        else:
+            arm = bandit.choose("insights", INSIGHTS_ARMS)
+            system_prompt = INSIGHTS_PROMPTS.get(arm.prompt_version, INSIGHTS_PROMPT)
+            arm_id = arm.arm_id
+        
         genai.configure(api_key=api_key)
-        llm = genai.GenerativeModel(model_name=model, system_instruction=INSIGHTS_PROMPT)
+        llm = genai.GenerativeModel(model_name=model, system_instruction=system_prompt)
 
         # Keep the input deterministic and reasonably compact.
         payload_text = json.dumps(insights_payload, ensure_ascii=False, separators=(',', ':'), default=str)
@@ -59,10 +104,10 @@ def generate_insights(
         response = llm.generate_content(user_prompt)
         text = (response.text or "").strip()
         if not text:
-            return None, "Empty insights response"
-        return text, None
+            return None, "Empty insights response", arm_id
+        return text, None, arm_id
     except Exception as e:
-        return None, str(e)
+        return None, str(e), None
 
 
 def generate_recommendations(

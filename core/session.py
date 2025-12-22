@@ -29,6 +29,7 @@ class SessionManager:
         self._charts: Dict[str, str] = {}
         self._insights_payloads: Dict[str, dict] = {}
         self._insights_text: Dict[str, str] = {}
+        self._arm_ids: Dict[str, str] = {}  # chart_id -> arm_id for bandit tracking
         self._storage_dir = storage_dir
         self._path = os.path.join(storage_dir, 'session.json')
         self._charts_dir = os.path.join(storage_dir, 'charts')
@@ -188,6 +189,33 @@ class SessionManager:
             pass
         return None
     
+    # Arm ID methods (for bandit tracking)
+    def store_arm_id(self, context_id: str, arm_id: str):
+        """Store arm_id for a chart/insights context for feedback tracking."""
+        self._arm_ids[context_id] = arm_id
+        try:
+            path = os.path.join(self._charts_dir, f"{context_id}_arm.txt")
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(arm_id)
+        except:
+            pass
+    
+    def get_arm_id(self, context_id: str) -> Optional[str]:
+        """Get arm_id for a chart/insights context."""
+        if context_id in self._arm_ids:
+            return self._arm_ids.get(context_id)
+        try:
+            path = os.path.join(self._charts_dir, f"{context_id}_arm.txt")
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    arm_id = f.read().strip()
+                if arm_id:
+                    self._arm_ids[context_id] = arm_id
+                    return arm_id
+        except:
+            pass
+        return None
+    
     # Clear
     def clear(self):
         """Clear all data"""
@@ -202,6 +230,7 @@ class SessionManager:
         self._charts.clear()
         self._insights_payloads.clear()
         self._insights_text.clear()
+        self._arm_ids.clear()
 
         # Clear ALL persisted files under uploads/ (handles orphaned CSVs, old payloads, etc.)
         try:
