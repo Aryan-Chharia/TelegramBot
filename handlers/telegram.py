@@ -505,28 +505,17 @@ async def handle_feedback_callback(update: Update, ctx: ContextTypes.DEFAULT_TYP
     feedback_emoji = "👍" if reward == 1 else "👎"
     await query.answer(f"Thanks for your feedback! {feedback_emoji}")
     
-    # Remove the feedback buttons from the message
+    # Remove feedback buttons from the message.
+    # - For insights messages: remove the entire inline keyboard.
+    # - For chart action messages: keep action buttons but remove feedback row.
     try:
-        # Get current message text and rebuild without feedback buttons
-        current_text = query.message.text or ""
-        if "Chart ready" in current_text:
-            # This is a chart action message - rebuild with just chart buttons
-            chart_id = context_id
-            url = get_chart_url(chart_id)
-            rows = []
-            if url:
-                rows.append([InlineKeyboardButton("🔍 Open Interactive Chart", web_app=WebAppInfo(url=url))])
-            # Check if insights were already generated
-            if not session_manager.get_insights_text(chart_id):
-                rows.append([InlineKeyboardButton("📌 Generate Insights (5)", callback_data=f"insights:{chart_id}")])
-            rows.append([InlineKeyboardButton(f"✓ Rated {feedback_emoji}", callback_data="noop")])
-            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(rows))
+        if context_id.startswith("insights_"):
+            await query.edit_message_reply_markup(reply_markup=None)
         else:
-            # This is an insights message - just show rated confirmation
+            chart_id = context_id
+            include_insights = session_manager.get_insights_text(chart_id) is None
             await query.edit_message_reply_markup(
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton(f"✓ Rated {feedback_emoji}", callback_data="noop")
-                ]])
+                reply_markup=_chart_actions_keyboard(chart_id, arm_id=None, include_insights=include_insights)
             )
     except Exception:
         pass  # Message might not be editable
