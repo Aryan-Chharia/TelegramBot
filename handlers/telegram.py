@@ -6,7 +6,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppI
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
 from core import session_manager, process_dataset, validate_file, generate_chart
-from services import generate_code, generate_insights, get_chart_url, get_preview_url
+from services import generate_code, generate_insights, generate_recommendations, get_chart_url, get_preview_url
 
 
 def _chart_actions_keyboard(chart_id: str, include_insights: bool = True) -> InlineKeyboardMarkup:
@@ -59,24 +59,29 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 **Step 1: Upload Your Data**
 Send a CSV file (spreadsheet data). You can upload up to 5 files.
 
-**Step 2: Request a Visualization**
+**Step 2: Get Chart Ideas (Optional)**
+Use /recommend to get AI-powered suggestions for visualizations based on your data!
+
+**Step 3: Request a Visualization**
 Just describe what you want in plain English:
 • "Bar chart of sales by region"
 • "Compare revenue vs expenses over time"
 • "Pie chart showing category distribution"
 • "Scatter plot of price vs quantity"
 
-**Step 3: Interact**
+**Step 4: Interact**
 Tap "Interactive" button to zoom, pan, and explore your chart!
 
 **Commands:**
 /start - Check bot status & your datasets
 /datasets - See details of uploaded files
 /preview - View the actual data in your CSV
+/recommend - Get AI chart recommendations
 /clear - Remove all files & start over
 /help - Show this guide
 
 **Tips:**
+💡 Use /recommend 10 for more suggestions (3-15)
 💡 Be specific with column names for best results
 💡 You can ask follow-up questions to refine charts
 💡 Upload multiple CSVs to compare different datasets""", parse_mode='Markdown')
@@ -141,6 +146,104 @@ async def cmd_clear(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 You're starting fresh. Send a CSV file to begin!
 
 _Note: Chat messages stay visible in Telegram. To clear those too, long-press this chat → Delete Chat._""", parse_mode='Markdown')
+
+
+async def cmd_recommend(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Handle /recommend - Get AI-powered chart recommendations"""
+    datasets = session_manager.get_all_datasets()
+    
+    if not datasets:
+        await update.message.reply_text(
+            "📂 **No Datasets Yet**\n\nUpload a CSV file first, then use /recommend to get chart suggestions!",
+            parse_mode='Markdown'
+        )
+        return
+    
+    # Parse optional argument for number of recommendations (default: 5)
+    num_charts = 5
+    if ctx.args and len(ctx.args) > 0:
+        try:
+            num_charts = min(max(int(ctx.args[0]), 3), 15)  # Clamp between 3-15
+        except ValueError:
+            pass
+    
+    msg = await update.message.reply_text(
+        f"🧠 Analyzing your data and generating {num_charts} chart recommendations..."
+    )
+    
+    try:
+        api_key = ctx.bot_data.get('gemini_api_key')
+        model = ctx.bot_data.get('gemini_model', 'gemini-3-flash-preview')
+        
+        if not api_key:
+            await msg.edit_text("❌ Gemini API key not configured")
+            return
+        
+        datasets_info = session_manager.get_datasets_for_llm()
+        recommendations, error = generate_recommendations(datasets_info, num_charts, api_key, model)
+        
+        if error:
+            await msg.edit_text(f"❌ {error}")
+            return
+        
+        # Delete the "Analyzing..." message
+        try:
+            await msg.delete()
+        except:
+            pass
+        
+        # Send recommendations (split if too long for Telegram)
+        header = f"📈 **Chart Recommendations for Your Data**\n\n"
+        full_text = header + recommendations
+        
+        # Telegram message limit is 4096 chars
+        if len(full_text) <= 4096:
+            await update.message.reply_text(full_text, parse_mode='Markdown')
+        else:
+            # Split into chunks
+            await update.message.reply_text(header + "_(See recommendations below)_", parse_mode='Markdown')
+            chunks = _split_recommendations(recommendations)
+            for chunk in chunks:
+                if chunk.strip():
+                    try:
+                        await update.message.reply_text(chunk, parse_mode='Markdown')
+                    except:
+                        # Fallback without markdown if parsing fails
+                        await update.message.reply_text(chunk)
+        
+        # Add tip
+        await update.message.reply_text(
+            "💡 **Tip:** Copy any command above and send it to me to create that chart!",
+            parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Error: {e}")
+
+
+def _split_recommendations(text: str, max_len: int = 4000) -> list:
+    """Split recommendations into chunks at section boundaries."""
+    chunks = []
+    current = ""
+    
+    # Split by ## headers (category sections)
+    sections = text.split('\n## ')
+    
+    for i, section in enumerate(sections):
+        if i > 0:
+            section = '## ' + section
+        
+        if len(current) + len(section) + 1 > max_len:
+            if current:
+                chunks.append(current.strip())
+            current = section
+        else:
+            current += ('\n' if current else '') + section
+    
+    if current:
+        chunks.append(current.strip())
+    
+    return chunks
 
 
 async def handle_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -345,6 +448,7 @@ def setup_handlers(app: Application):
     app.add_handler(CommandHandler("datasets", cmd_datasets))
     app.add_handler(CommandHandler("preview", cmd_preview))
     app.add_handler(CommandHandler("clear", cmd_clear))
+    app.add_handler(CommandHandler("recommend", cmd_recommend))
     app.add_handler(CallbackQueryHandler(handle_insights_callback, pattern=r"^insights:"))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

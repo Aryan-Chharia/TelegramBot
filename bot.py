@@ -14,6 +14,7 @@ async def post_init(app: Application):
         BotCommand("start", "🚀 Start bot & see current status"),
         BotCommand("datasets", "📂 View all uploaded CSV files"),
         BotCommand("preview", "👀 Preview data inside your CSV"),
+        BotCommand("recommend", "💡 Get AI chart recommendations"),
         BotCommand("clear", "🗑️ Delete all data & start fresh"),
         BotCommand("help", "❓ How to use this bot"),
     ]

@@ -3,7 +3,7 @@ import google.generativeai as genai
 import json
 from typing import List, Dict, Any, Tuple, Optional
 
-from prompts import SYSTEM_PROMPT, INSIGHTS_PROMPT
+from prompts import SYSTEM_PROMPT, INSIGHTS_PROMPT, RECOMMENDATIONS_PROMPT
 
 
 def generate_code(
@@ -61,6 +61,47 @@ def generate_insights(
         if not text:
             return None, "Empty insights response"
         return text, None
+    except Exception as e:
+        return None, str(e)
+
+
+def generate_recommendations(
+    datasets: List[Dict[str, Any]],
+    num_charts: int,
+    api_key: str,
+    model: str = "gemini-3-flash-preview"
+) -> Tuple[Optional[str], Optional[str]]:
+    """Generate chart recommendations based on dataset schema."""
+    try:
+        if not datasets:
+            return None, "No datasets available for recommendations"
+        
+        genai.configure(api_key=api_key)
+        system_prompt = RECOMMENDATIONS_PROMPT.format(num_charts=num_charts)
+        llm = genai.GenerativeModel(model_name=model, system_instruction=system_prompt)
+        
+        # Build dataset info for the prompt
+        sections = []
+        sections.append("**Dataset Info:**")
+        
+        for ds in datasets:
+            sections.append(f"\n📊 Dataset: '{ds['name']}'")
+            sections.append(f"- Columns: {ds['columns']}")
+            sections.append(f"- Data Types: {ds['dtypes']}")
+            sections.append(f"- Dimensions: {ds['rows']} rows × {ds['cols']} columns")
+            sections.append(f"- Sample Data (first 3 rows):")
+            sections.append(ds['sample_data'])
+        
+        user_prompt = "\n".join(sections)
+        
+        response = llm.generate_content(user_prompt)
+        text = (response.text or "").strip()
+        
+        if not text:
+            return None, "Empty recommendations response"
+        
+        return text, None
+        
     except Exception as e:
         return None, str(e)
 

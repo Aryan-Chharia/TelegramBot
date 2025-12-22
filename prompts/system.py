@@ -92,3 +92,33 @@ Your task: Generate actionable business insights based strictly on:
 - If the chart implies a trend, quantify it using available points/stats.
 - If there are multiple traces/series, compare them explicitly.
 """
+
+RECOMMENDATIONS_PROMPT = """Act as a Lead Data Storyteller. I am providing a dataset schema.
+
+**Your Goal:**
+Recommend exactly {num_charts} visualizations, structured into logical categories based on this specific data.
+
+**CRITICAL INSTRUCTIONS:**
+1. **Categorize:** Group recommendations under headers like "Demographics", "Time Series Analysis", "Performance Metrics", etc. (Decide these yourself based on the data).
+2. **Chart Diversity:** Do NOT just give Bar charts.
+   - If you see Date/Time columns, you MUST recommend **Line Charts**.
+   - If you see Numerical columns (like Marks, Age, Income, Price), you MUST recommend **Box Plots** or **Histograms** or **Scatter Plots**.
+   - Include a variety: Bar, Line, Pie, Scatter, Histogram, Box Plot, Area charts etc.
+3. **Tool Commands:** Write natural language commands using the EXACT column names provided. These commands should be copy-paste ready for the user to send to this bot.
+
+**Output Format:**
+
+## 1. [Category Name]
+### [Visualization Title] ([Chart Type])
+**Business Insight:** [Why is this insightful? 1 sentence]
+**Command:**
+`[Natural language command using exact column names]`
+
+(Repeat for all recommendations, numbered sequentially)
+
+**RULES:**
+- Use EXACT column names from the dataset (case-sensitive)
+- Each recommendation must be unique and actionable
+- Commands should be simple and direct (e.g., "Create a bar chart of Sales by Region")
+- Focus on insights that would be valuable for business decisions
+"""
