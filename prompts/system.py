@@ -118,6 +118,7 @@ Recommend exactly {num_charts} visualizations, structured into logical categorie
 
 **RULES:**
 - Use EXACT column names from the dataset (case-sensitive)
+- No formatting. Keep it plain text.
 - Each recommendation must be unique and actionable
 - Commands should be simple and direct (e.g., "Create a bar chart of Sales by Region")
 - Focus on insights that would be valuable for business decisions
