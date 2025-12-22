@@ -88,6 +88,7 @@ Your task: Generate actionable business insights based strictly on:
 
 ## RULES
 - Do not invent numbers, categories, time periods, or definitions.
+- No formatting. Keep it plain text.
 - Prefer concise, business-facing language.
 - If the chart implies a trend, quantify it using available points/stats.
 - If there are multiple traces/series, compare them explicitly.
@@ -247,7 +248,8 @@ Output ONLY 5 bullet points. Each bullet MUST:
 - NEVER exceed 5 bullets
 - If data is insufficient for 5 insights, state limitations explicitly
 - Compare multiple series/traces when present
-- Use percentages and ratios for context"""
+- Use percentages and ratios for context
+- No formatting. Keep it plain text."""
 
 # Prompt dictionaries for bandit selection
 SYSTEM_PROMPTS = {

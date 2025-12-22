@@ -30,12 +30,75 @@ class SessionManager:
         self._insights_payloads: Dict[str, dict] = {}
         self._insights_text: Dict[str, str] = {}
         self._arm_ids: Dict[str, str] = {}  # chart_id -> arm_id for bandit tracking
+        self._ratings: Dict[str, int] = {}  # context_id -> reward (1/0)
         self._storage_dir = storage_dir
         self._path = os.path.join(storage_dir, 'session.json')
         self._charts_dir = os.path.join(storage_dir, 'charts')
         os.makedirs(storage_dir, exist_ok=True)
         os.makedirs(self._charts_dir, exist_ok=True)
         self._load()
+
+    # Bandit feedback tracking
+    def store_arm_id(self, context_id: str, arm_id: str):
+        """Store which bandit arm was used for a given context (chart or insights)."""
+        if not context_id or not arm_id:
+            return
+        self._arm_ids[context_id] = arm_id
+        try:
+            path = os.path.join(self._charts_dir, f"{context_id}_arm.txt")
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(arm_id)
+        except:
+            pass
+
+    def get_arm_id(self, context_id: str) -> Optional[str]:
+        if not context_id:
+            return None
+        if context_id in self._arm_ids:
+            return self._arm_ids.get(context_id)
+        try:
+            path = os.path.join(self._charts_dir, f"{context_id}_arm.txt")
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    arm_id = (f.read() or '').strip()
+                if arm_id:
+                    self._arm_ids[context_id] = arm_id
+                    return arm_id
+        except:
+            pass
+        return None
+
+    def set_rating(self, context_id: str, reward: int):
+        """Persist that the user rated a given context (prevents rating buttons from reappearing)."""
+        if not context_id:
+            return
+        if reward not in (0, 1):
+            return
+        self._ratings[context_id] = reward
+        try:
+            path = os.path.join(self._charts_dir, f"{context_id}_rating.json")
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump({'reward': reward}, f, separators=(',', ':'))
+        except:
+            pass
+
+    def get_rating(self, context_id: str) -> Optional[int]:
+        if not context_id:
+            return None
+        if context_id in self._ratings:
+            return self._ratings.get(context_id)
+        try:
+            path = os.path.join(self._charts_dir, f"{context_id}_rating.json")
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                reward = data.get('reward')
+                if reward in (0, 1):
+                    self._ratings[context_id] = reward
+                    return reward
+        except:
+            pass
+        return None
     
     def _load(self):
         """Load session from disk"""
@@ -230,6 +293,8 @@ class SessionManager:
         self._charts.clear()
         self._insights_payloads.clear()
         self._insights_text.clear()
+        self._arm_ids.clear()
+        self._ratings.clear()
         self._arm_ids.clear()
 
         # Clear ALL persisted files under uploads/ (handles orphaned CSVs, old payloads, etc.)

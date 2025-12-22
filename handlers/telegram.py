@@ -18,7 +18,7 @@ def _chart_actions_keyboard(chart_id: str, arm_id: str = None, include_insights:
     if include_insights:
         rows.append([InlineKeyboardButton("📌 Generate Insights (5)", callback_data=f"insights:{chart_id}")])
     # Add feedback buttons if arm_id provided
-    if arm_id:
+    if arm_id and session_manager.get_rating(chart_id) is None:
         rows.append([
             InlineKeyboardButton("👍", callback_data=f"feedback:1:{arm_id}:{chart_id}"),
             InlineKeyboardButton("👎", callback_data=f"feedback:0:{arm_id}:{chart_id}")
@@ -418,6 +418,8 @@ async def handle_insights_callback(update: Update, ctx: ContextTypes.DEFAULT_TYP
         try:
             # Get stored arm_id for the chart to preserve feedback buttons
             stored_arm_id = session_manager.get_arm_id(chart_id)
+            if session_manager.get_rating(chart_id) is not None:
+                stored_arm_id = None
             await query.edit_message_reply_markup(
                 reply_markup=_chart_actions_keyboard(chart_id, arm_id=stored_arm_id, include_insights=False)
             )
@@ -466,6 +468,8 @@ async def handle_insights_callback(update: Update, ctx: ContextTypes.DEFAULT_TYP
     # Hide Insights button after first successful generation, keep feedback buttons
     try:
         stored_arm_id = session_manager.get_arm_id(chart_id)
+        if session_manager.get_rating(chart_id) is not None:
+            stored_arm_id = None
         await query.edit_message_reply_markup(
             reply_markup=_chart_actions_keyboard(chart_id, arm_id=stored_arm_id, include_insights=False)
         )
@@ -500,6 +504,9 @@ async def handle_feedback_callback(update: Update, ctx: ContextTypes.DEFAULT_TYP
 
     # Update bandit with feedback
     stats = bandit.update(arm_id, reward)
+
+    # Persist that this context has been rated (prevents reappearing buttons).
+    session_manager.set_rating(context_id, reward)
     
     # Show confirmation and remove feedback buttons
     feedback_emoji = "👍" if reward == 1 else "👎"
